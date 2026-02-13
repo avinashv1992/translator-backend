@@ -1,13 +1,14 @@
 #!/bin/bash
-
 set -e
 
-echo "Installing dependencies..."
+echo "Updating system..."
 apt-get update
-apt-get install -y libcurl4-openssl-dev
+
+echo "Installing compiler and dependencies..."
+apt-get install -y build-essential libcurl4-openssl-dev
 
 echo "Building server..."
-g++ src/main.cpp \
+g++ src/*.cpp \
 -Iinclude \
 -lcurl \
 -pthread \
