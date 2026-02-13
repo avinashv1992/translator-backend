@@ -1,15 +1,13 @@
 #!/bin/bash
 set -e
 
-echo "Updating system..."
+echo "Installing dependencies..."
 apt-get update
-
-echo "Installing compiler and dependencies..."
 apt-get install -y build-essential libcurl4-openssl-dev
 
 echo "Finding source files..."
 
-FILES=$(find . -name "*.cpp")
+FILES=$(find backend/src -name "*.cpp")
 
 echo "Found files:"
 echo "$FILES"
@@ -20,10 +18,12 @@ if [ -z "$FILES" ]; then
 fi
 
 echo "Building server..."
+
 g++ $FILES \
--Iinclude \
+-Ibackend/include \
+-Ibackend/include/crow \
 -lcurl \
 -pthread \
 -o server
 
-echo "Build complete"
+echo "Build finished successfully"
