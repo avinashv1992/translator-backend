@@ -486,9 +486,25 @@ int main()
             << "http://localhost:8080\n"
             << std::endl;
 
-        app.port(8080)
-           .multithreaded()
-           .run();
+        // app.port(8080)
+        //    .multithreaded()
+        //    .run();
+
+        // need to manage dynamic port for deployment platforms like Railway, Heroku, etc.
+        const char *portEnv = std::getenv("PORT");
+
+        int port = 8080; // fallback for local
+
+        if (portEnv != nullptr)
+        {
+          port = std::stoi(portEnv);
+        }
+
+        std::cout << "Server starting on port " << port << std::endl;
+
+        app.port(port)
+            .multithreaded()
+            .run();
 
 
         curl_global_cleanup();
