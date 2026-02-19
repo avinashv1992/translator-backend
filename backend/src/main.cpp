@@ -974,6 +974,70 @@ std::string callGroq(const std::string& systemPrompt,
 /* ============================================================
    Gemini Call (for judge & back translation)
 ============================================================ */
+std::string callGrokForbackTranslation(const std::string& prompt)
+{
+    CURL* curl = curl_easy_init();
+    if (!curl)
+        throw std::runtime_error("Curl init failed");
+
+    std::string response;
+
+    ordered_json body = {
+        {"model", "llama-3.1-8b-instant"},
+        {"temperature", 0.0},
+        {"messages", {
+            {{"role","user"},{"content", prompt}}
+        }}
+    };
+
+    std::string bodyStr = body.dump();
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    std::string auth = "Authorization: Bearer " + GROQ_API_KEY;
+    headers = curl_slist_append(headers, auth.c_str());
+
+    curl_easy_setopt(curl, CURLOPT_URL, GROQ_URL.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, bodyStr.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+
+    if (res != CURLE_OK)
+        throw std::runtime_error("Groq request failed");
+
+    ordered_json j;
+
+    try
+    {
+        j = ordered_json::parse(response);
+    }
+    catch (...)
+    {
+        throw std::runtime_error("Groq returned invalid JSON");
+    }
+
+    if (!j.contains("choices") ||
+        j["choices"].empty() ||
+        !j["choices"][0].contains("message") ||
+        !j["choices"][0]["message"].contains("content") ||
+        j["choices"][0]["message"]["content"].is_null())
+    {
+        throw std::runtime_error("Groq returned unexpected format");
+    }
+
+    std::string output =
+        j["choices"][0]["message"]["content"].get<std::string>();
+
+    return output;
+}
 
 std::string callGemini(const std::string& prompt)
 {
@@ -1273,7 +1337,7 @@ CROW_ROUTE(app, "/api/translate_to_check")
 
                 try
                 {
-                    llamaBack  = callGemini("Translate back to English:\n" + llamaForward);
+                    llamaBack  = callGrokForbackTranslation("Translate back to English:\n" + llamaForward);
                     geminiBack = callGemini("Translate back to English:\n" + geminiForward);
                 }
                 catch (...)
