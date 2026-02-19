@@ -1,520 +1,533 @@
 #include "crow/app.h"
 #include "crow/json.h"
-//#include "translator.h"
-
-
-// int main(){
-
-//     crow::SimpleApp app;
-
-//     Translator translator;
-
-//     // Health
-//     CROW_ROUTE(app,"/health")
-//     ([](){
-//         return "OK";
-//     });
-
-//     // Translate API
-//     CROW_ROUTE(app,"/api/translate")
-//       .methods("POST"_method)
-//     ([&](const crow::request& req){
-
-//         auto body =
-//           crow::json::load(req.body);
-
-//         if(!body){
-//             return crow::response(
-//               400,"Invalid JSON");
-//         }
-
-//         std::string text =
-//           body["text"].s();
-
-//         std::string lang =
-//           body["language"].s();
-
-//         std::string result =
-//           translator.translate(text,lang);
-
-//         crow::json::wvalue resp;
-
-//         resp["result"] = result;
-//         resp["status"] = "ok";
-
-//         return crow::response(resp);
-//     });
-
-//     app.port(8080)
-//        .multithreaded()
-//        .run();
-// }
-
-// Perfect. Below is a complete, single-file main.cpp that:
-
-// ✅ Runs a Crow HTTP server
-// ✅ Accepts JSON requests
-// ✅ Builds a translation context
-// ✅ Calls Groq/LLaMA using libcurl
-// ✅ Handles errors safely
-// ✅ Uses environment variable for API key
-// ✅ Returns clean JSON to frontend
-
-// This is a self-contained demo backend.
-
-// You can copy–paste this directly.
-
-// ✅ 1. Complete main.cpp (All-in-One Backend)
-
-// Create / replace:
-
-// backend/src/main.cpp
-
-
-// with this:
-
-// 📄 main.cpp
-//#include "crow.h"
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
 
 #include <iostream>
 #include <string>
 #include <cstdlib>
-
-// for caching translations (optional)
 #include <unordered_map>
 #include <mutex>
-// Translation Cache (Thread-Safe)
-std::unordered_map<std::string, std::string> translationCache;
-std::mutex cacheMutex;
+
+//using json = nlohmann::json;
+
+using ordered_json = nlohmann::ordered_json;
 
 
-using json = nlohmann::json;
+/* ============================================================
+   Global Keys
+============================================================ */
 
-/* ================================
-   Global Config
-================================ */
-
-// Read API key from environment
-std::string getApiKey()
-{
-     const char* key = std::getenv("GROQ_API_KEY");
-
-    if (!key)
-    {
-        throw std::runtime_error(
-            "GROQ_API_KEY environment variable not set"
-        );
-    }
-
-    return std::string(key);
-}
+std::string GROQ_API_KEY;
+std::string GEMINI_API_KEY;
 
 const std::string GROQ_URL =
     "https://api.groq.com/openai/v1/chat/completions";
 
-std::string GROQ_API_KEY;
+const std::string GEMINI_URL =
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=";
 
+/* ============================================================
+   Helpers
+============================================================ */
 
-/* ================================
-   Curl Helper
-================================ */
-
-static size_t WriteCallback(
-    void* contents,
-    size_t size,
-    size_t nmemb,
-    std::string* output)
+static size_t WriteCallback(void* contents,
+                            size_t size,
+                            size_t nmemb,
+                            std::string* output)
 {
     size_t total = size * nmemb;
     output->append((char*)contents, total);
     return total;
 }
 
-
-/* ================================
-   Context Builder
-================================ */
-
-std::string buildContext(
-    const std::string& text,
-    const std::string& language)
+std::string cleanString(const std::string& s)
 {
-    // std::string context =
-    //     "You are an enterprise localization engine.\n"
-    //     "Rules:\n"
-    //     "- Always return only translated text\n"
-    //     "- No explanation\n"
-    //     "- No extra symbols\n"
-    //     "- Use formal UI language\n"
-    //     "- Be consistent\n\n"
-    //     "Translate to " + language + ":\n\"" +
-    //     text + "\"";
+    std::string out = s;
 
-    // return context;
-    std::string context =
-        "You are a professional enterprise software localization engine.\n"
-        "You translate UI strings for Siemens Teamcenter PLM.\n"
-        "Rules:\n"
-        "1. Always preserve technical meaning.\n"
-        "2. Always use standard PLM terminology.\n"
-        "3. Never paraphrase.\n"
-        "4. Never simplify.\n"
-        "5. Never add explanation.\n"
-        "6. Never change sentence structure.\n"
-        "7. Always be consistent across requests.\n"
-        "8. Output ONLY translated text.\n\n"
-        "Target language: " + language + "\n\n"
-        "Translate this UI string exactly:\n" + text + "";
+    // Remove trailing newline
+    if (!out.empty() && out.back() == '\n')
+        out.pop_back();
 
-      return context;
-
-    // return R"(You are a professional enterprise software localization engine.
-
-    // You translate UI strings for Siemens Teamcenter PLM.
-
-    // Rules:
-    // 1. Always preserve technical meaning.
-    // 2. Always use standard PLM terminology.
-    // 3. Never paraphrase.
-    // 4. Never simplify.
-    // 5. Never add explanation.
-    // 6. Never change sentence structure.
-    // 7. Always be consistent across requests.
-    // 8. Output ONLY translated text.
-
-    // Target language: )" + language + R"(
-
-    // Translate this UI string exactly:
-
-    // ")" + text + R"(")";
+    return out;
 }
 
 
-/* ================================
-   LLM Client (Groq / LLaMA)
-================================ */
+std::string getEnv(const char* key)
+{
+    const char* value = std::getenv(key);
+    if (!value)
+        throw std::runtime_error(std::string(key) + " not set");
+    return std::string(value);
+}
 
-std::string callGroqLLM(const std::string& prompt)
+/* ============================================================
+   Curl POST
+============================================================ */
+
+std::string curlPost(const std::string& url,
+                     const std::string& body,
+                     const std::vector<std::string>& headersVec)
 {
     CURL* curl = curl_easy_init();
-
     if (!curl)
         throw std::runtime_error("Curl init failed");
 
     std::string response;
 
-    /* Build JSON body */
-    json body = {
-        {"model", "llama-3.1-8b-instant"},
-        {"temperature", 0.0},
-        {"messages", {
-            {
-                {"role", "system"},
-                {"content", "You are a professional translator."}
-            },
-            {
-                {"role", "user"},
-                {"content", prompt}
-            }
-        }}
-    };
-
-    std::string bodyStr = body.dump();
-
-    /* Headers */
     struct curl_slist* headers = nullptr;
+    for (const auto& h : headersVec)
+        headers = curl_slist_append(headers, h.c_str());
 
-    headers = curl_slist_append(
-        headers, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
 
-    std::string auth =
-        "Authorization: Bearer " + GROQ_API_KEY;
-
-    headers = curl_slist_append(
-        headers, auth.c_str());
-
-    /* Curl options */
-    curl_easy_setopt(curl, CURLOPT_URL,
-                     GROQ_URL.c_str());
-
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER,
-                     headers);
-
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS,
-                     bodyStr.c_str());
-
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,
-                     WriteCallback);
-
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,
-                     &response);
-
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-
-    /* Execute */
     CURLcode res = curl_easy_perform(curl);
 
     if (res != CURLE_OK)
     {
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
-
-        throw std::runtime_error(
-            curl_easy_strerror(res));
+        throw std::runtime_error(curl_easy_strerror(res));
     }
 
-    /* Cleanup */
     curl_easy_cleanup(curl);
     curl_slist_free_all(headers);
 
-    /* Parse response */
-    auto j = json::parse(response);
-
-    if (!j.contains("choices"))
-        throw std::runtime_error("Invalid LLM response");
-
-    return j["choices"][0]["message"]["content"];
+    return response;
 }
 
-
-/* ================================
-   Translator Service
-================================ */
-
-std::string translateText(
-    const std::string& text,
-    const std::string& language)
+/* ============================================================
+   Groq (LLaMA)
+============================================================ */
+std::string callGroq(const std::string& systemPrompt,
+                     const std::string& userPrompt)
 {
-    std::string context =
-        buildContext(text, language);
+    CURL* curl = curl_easy_init();
+    if (!curl)
+        throw std::runtime_error("Curl init failed");
 
-    return callGroqLLM(context);
-}
+    std::string response;
 
-/* ================================
-   saveToCache - Store translation in cache
-================================ */
-void saveToCache(
-    const std::string& key,
-    const std::string& value)
-{
-    std::lock_guard<std::mutex> lock(cacheMutex);
+    ordered_json body = {
+        {"model", "llama-3.1-8b-instant"},
+        {"temperature", 0.0},
+        {"messages", {
+            {{"role","system"},{"content",systemPrompt}},
+            {{"role","user"},{"content",userPrompt}}
+        }}
+    };
 
-    translationCache[key] = value;
-}
+    std::string bodyStr = body.dump();
 
-/* ================================
-   getFromCache - Check if translation exists in cache
-================================ */
-bool getFromCache(
-    const std::string& key,
-    std::string& result)
-{
-    std::lock_guard<std::mutex> lock(cacheMutex);
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    auto it = translationCache.find(key);
+    std::string auth = "Authorization: Bearer " + GROQ_API_KEY;
+    headers = curl_slist_append(headers, auth.c_str());
 
-    if (it != translationCache.end())
+    curl_easy_setopt(curl, CURLOPT_URL, GROQ_URL.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, bodyStr.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+
+    if (res != CURLE_OK)
+        throw std::runtime_error("Groq request failed");
+
+    ordered_json j;
+
+    try
     {
-        result = it->second;
-        return true;
+        j = ordered_json::parse(response);
+    }
+    catch (...)
+    {
+        throw std::runtime_error("Groq returned invalid JSON");
     }
 
-    return false;
-}
-
-/* ================================
-   normailizeText - Utility to clean up input text
-================================ */
-std::string normalizeText(std::string s)
-{
-    // Trim left
-    s.erase(0, s.find_first_not_of(" \t\n\r"));
-
-    // Trim right
-    s.erase(s.find_last_not_of(" \t\n\r") + 1);
-
-    // Convert multiple spaces to single
-    std::string out;
-    bool space = false;
-
-    for (char c : s)
+    if (!j.contains("choices") ||
+        j["choices"].empty() ||
+        !j["choices"][0].contains("message") ||
+        !j["choices"][0]["message"].contains("content") ||
+        j["choices"][0]["message"]["content"].is_null())
     {
-        if (isspace(c))
-        {
-            if (!space)
-                out += ' ';
-            space = true;
-        }
-        else
-        {
-            out += c;
-            space = false;
-        }
+        throw std::runtime_error("Groq returned error: " + response);
     }
 
-    return out;
+    std::string output = j["choices"][0]["message"]["content"];
+    output.erase(output.find_last_not_of(" \n\r\t") + 1);
+    return output;
 }
 
-/* ================================
-   makeCacheKey - Utility for caching translations
-================================ */
-std::string makeCacheKey(
-    const std::string& text,
-    const std::string& language)
+/* ============================================================
+   Gemini
+============================================================ */
+std::string callGemini(const std::string& prompt)
 {
-    return normalizeText(text) + "||" + language;
+    CURL* curl = curl_easy_init();
+    if (!curl)
+        throw std::runtime_error("Curl init failed");
+
+    std::string response;
+
+    std::string url =
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key="
+        + GEMINI_API_KEY;
+
+    ordered_json body = {
+        {"contents", {
+            {
+                {"parts", {
+                    {{"text", prompt}}
+                }}
+            }
+        }}
+    };
+
+    std::string bodyStr = body.dump();
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, bodyStr.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+
+    if (res != CURLE_OK)
+        throw std::runtime_error("Gemini request failed");
+
+    ordered_json j;
+
+    try
+    {
+        j = ordered_json::parse(response);
+    }
+    catch (...)
+    {
+        throw std::runtime_error("Gemini returned invalid JSON");
+    }
+
+    if (!j.contains("candidates") ||
+        j["candidates"].empty() ||
+        !j["candidates"][0].contains("content") ||
+        !j["candidates"][0]["content"].contains("parts") ||
+        j["candidates"][0]["content"]["parts"].empty() ||
+        !j["candidates"][0]["content"]["parts"][0].contains("text") ||
+        j["candidates"][0]["content"]["parts"][0]["text"].is_null())
+    {
+        throw std::runtime_error("Gemini returned error: " + response);
+    }
+
+    return j["candidates"][0]["content"]["parts"][0]["text"].get<std::string>();
 }
 
-/* ================================
-   Main Server
-================================ */
+
+/* ============================================================
+   Prompt Builder
+============================================================ */
+std::string buildSystemPrompt(const std::string& language)
+{
+       return
+    "You are a professional enterprise software localization expert.\n"
+    "Domain: Siemens Teamcenter PLM.\n"
+    "Strict rules:\n"
+    "- Preserve technical meaning exactly.\n"
+    "- Never paraphrase.\n"
+    "- Never simplify.\n"
+    "- Never change structure.\n"
+    "- Use standard PLM terminology.\n"
+    "- Keep standard English domain terms like 'Single Source of Truth' when commonly used in enterprise software.\n"
+    "- Output ONLY translated text.\n"
+    "- No explanations.\n\n"
+    "Target language: " + language;
+}
+
+std::string buildUserPrompt(const std::string& text,
+                            const std::string& language)
+{
+    return "Translate to " + language + ":\n\n" + text;
+}
+
+/* ============================================================
+   MAIN
+============================================================ */
 
 int main()
 {
     try
     {
-        /* Init curl */
         curl_global_init(CURL_GLOBAL_ALL);
 
-        /* Read API key */
-        GROQ_API_KEY = getApiKey();
+        GROQ_API_KEY   = getEnv("GROQ_API_KEY");
+        GEMINI_API_KEY = getEnv("GEMINI_API_KEY");
 
         crow::SimpleApp app;
 
-        /* ---------------------------
-           Health Check
-        ---------------------------- */
+        /* =========================
+           HEALTH
+        ========================== */
 
         CROW_ROUTE(app, "/health")
         ([](){
-            return "OK";
+            return crow::response(200, "OK");
         });
 
+        /* =========================
+           TRANSLATE TO CHECK
+        ========================== */
 
-        /* ---------------------------
-           Translate API
-        ---------------------------- */
-
-        CROW_ROUTE(app, "/api/translate")
+        CROW_ROUTE(app, "/api/translate_to_check")
         .methods("POST"_method)
-        ([](const crow::request& req){
-
+        ([](const crow::request& req)
+        {
             try
             {
-                auto body =
-                    crow::json::load(req.body);
+                /* -------- Parse JSON -------- */
+
+                auto body = crow::json::load(req.body);
 
                 if (!body)
-                    return crow::response(
-                        400, "Invalid JSON");
+                    return crow::response(400, "Invalid JSON");
 
-                if (!body.has("text") ||
-                    !body.has("language"))
-                    return crow::response(
-                        400, "Missing fields");
+                if (!body.has("text") || !body.has("language"))
+                    return crow::response(400, "Missing required fields");
 
-                std::string text =
-                    body["text"].s();
-
-                std::string language =
-                    body["language"].s();
-
-                if (text.empty() ||
-                    language.empty())
-                    return crow::response(
-                        400, "Empty values");
-
-                #if 0
-                /*
-                Add caching layer 
-                */
-               // Normalize
-                text = normalizeText(text);    
-                // Create cache key
-                std::string key = makeCacheKey(text, language);
-                std::string cachedResult;
-                // 1️. Check cache
-                if (getFromCache(key, cachedResult))
+                if (body["text"].t() != crow::json::type::String ||
+                    body["language"].t() != crow::json::type::String)
                 {
-                  json res;
-
-                  res["status"] = "ok";
-                  res["result"] = cachedResult;
-                  res["cached"] = true;
-
-                  return crow::response(res.dump());
+                    return crow::response(400, "text and language must be strings");
                 }
-                #endif
 
-                //actual translation thru LLM
-                std::string result =
-                    translateText(text, language);
-                // 2️. Save to cache
-                //saveToCache(key, result);
+                std::string text           = body["text"].s();
+                std::string targetLanguage = body["language"].s();
 
-                crow::json::wvalue resp;
+                if (text.empty() || targetLanguage.empty())
+                    return crow::response(400, "Fields cannot be empty");
 
-                resp["status"] = "ok";
-                resp["result"] = result;
+                /* -------- Forward Translation -------- */
 
-                return crow::response(resp);
+                std::string systemPrompt = buildSystemPrompt(targetLanguage);
+                std::string userPrompt   = buildUserPrompt(text, targetLanguage);
+
+                std::string llamaForward;
+                std::string geminiForward;
+
+                try
+                {
+                    llamaForward  = callGroq(systemPrompt, userPrompt);
+                    geminiForward = callGemini(systemPrompt + "\n\n" + text);
+                }
+                catch (std::exception& e)
+                {
+                    return crow::response(500, std::string("Translation failed: ") + e.what());
+                }
+
+                /* -------- Back Translation -------- */
+
+                std::string llamaBack;
+                std::string geminiBack;
+
+                try
+                {
+                    llamaBack  = callGemini("Translate back to English:\n" + llamaForward);
+                    geminiBack = callGemini("Translate back to English:\n" + geminiForward);
+                }
+                catch (...)
+                {
+                    return crow::response(500, "Back translation failed");
+                }
+
+                /* -------- Judge -------- */
+
+                std::string judgePrompt =
+                    "Original:\n" + text +
+                    "\nA:\n" + llamaBack +
+                    "\nB:\n" + geminiBack +
+                    "\nScore A and B from 0 to 100. "
+                    "Return ONLY JSON {\"scoreA\": number, \"scoreB\": number}";
+
+                std::string judgeRaw;
+
+                try
+                {
+                    judgeRaw = callGemini(judgePrompt);
+                }
+                catch (...)
+                {
+                    return crow::response(500, "Judge model failed");
+                }
+
+                /* Clean JSON (remove markdown if present) */
+
+                size_t start = judgeRaw.find("{");
+                size_t end   = judgeRaw.rfind("}");
+
+                if (start == std::string::npos || end == std::string::npos)
+                {
+                    return crow::response(500, "Judge did not return JSON");
+                }
+
+                std::string cleanJson =
+                    judgeRaw.substr(start, end - start + 1);
+
+                ordered_json judgeJson;
+
+                try
+                {
+                    judgeJson = ordered_json::parse(cleanJson);
+                }
+                catch (...)
+                {
+                    return crow::response(500, "Judge JSON parse failed");
+                }
+
+                if (!judgeJson.contains("scoreA") ||
+                    !judgeJson.contains("scoreB") ||
+                    !judgeJson["scoreA"].is_number() ||
+                    !judgeJson["scoreB"].is_number())
+                {
+                    return crow::response(500, "Judge returned invalid score format");
+                }
+
+                double scoreA = judgeJson["scoreA"].get<double>();
+                double scoreB = judgeJson["scoreB"].get<double>();
+
+                // std::string winner =
+                //     scoreA > scoreB ? "Llama" :
+                //     scoreB > scoreA ? "Gemini" : "Tie";
+
+                /* -------- Final Response -------- */
+
+                // json response = {
+                //     {"forwardTranslations", {
+                //         {"Llama", llamaForward},
+                //         {"Gemini", geminiForward}
+                //     }},
+                //     {"backTranslations", {
+                //         {"Llama", llamaBack},
+                //         {"Gemini", geminiBack}
+                //     }},
+                //     {"scores", {
+                //         {"Llama", scoreA},
+                //         {"Gemini", scoreB}
+                //     }},
+                //     {"winner", winner}
+                // };
+
+                double geminiScoreA = scoreA; // Gemini judge for Llama
+                double geminiScoreB = scoreB; // Gemini judge for Gemini
+
+                double llamaScoreA = scoreA; // Llama judge for Llama
+                double llamaScoreB = scoreB; // Llama judge for Gemini
+
+                double llamaFinal = (geminiScoreA + llamaScoreA) / 2.0;
+                double geminiFinal = (geminiScoreB + llamaScoreB) / 2.0;
+                std::string winner = "Tie";
+                if (llamaFinal > geminiFinal)
+                    winner = "Llama";
+                else if (geminiFinal > llamaFinal)
+                    winner = "Gemini";
+
+                // Clean translations (remove trailing \n)
+                llamaForward = cleanString(llamaForward);
+                geminiForward = cleanString(geminiForward);
+                llamaBack = cleanString(llamaBack);
+                geminiBack = cleanString(geminiBack);
+
+                // Round scores to 2 decimal precision like NodeJS
+                auto round2 = [](double v)
+                {
+                    return std::round(v * 100.0) / 100.0;
+                };
+
+                geminiScoreA = round2(geminiScoreA);
+                geminiScoreB = round2(geminiScoreB);
+                llamaScoreA = round2(llamaScoreA);
+                llamaScoreB = round2(llamaScoreB);
+                llamaFinal = round2(llamaFinal);
+                geminiFinal = round2(geminiFinal);
+
+                // Build JSON in exact NodeJS order
+                //json response = json::object();
+                ordered_json  response = ordered_json ::object();
+
+                //response["detectedSourceLanguage"] = detectedSourceLanguage;
+                response["targetLanguage"] = targetLanguage;
+
+                response["forwardTranslations"] = {
+                    {"Llama", llamaForward},
+                    {"Gemini", geminiForward}};
+
+                response["backTranslations"] = {
+                    {"Llama", llamaBack},
+                    {"Gemini", geminiBack}};
+
+                response["judgeScores"] = {
+                    {"GeminiJudgeAverage", {{"Llama", geminiScoreA}, {"Gemini", geminiScoreB}}},
+                    {"LlamaJudgeAverage", {{"Llama", llamaScoreA}, {"Gemini", llamaScoreB}}}};
+
+                response["averageScores"] = {
+                    {"Llama", llamaFinal},
+                    {"Gemini", geminiFinal}};
+
+                response["winner"] = winner;
+
+                crow::response res(response.dump(4)); // pretty JSON
+                res.add_header("Content-Type", "application/json");
+                res.add_header("Access-Control-Allow-Origin", "*");
+
+                return res;
             }
             catch (std::exception& e)
             {
-                std::cerr
-                    << "ERROR: "
-                    << e.what()
-                    << std::endl;
-
                 return crow::response(
                     500,
-                    std::string("Server error: ")
-                    + e.what());
+                    std::string("Internal error: ") + e.what()
+                );
+            }
+            catch (...)
+            {
+                return crow::response(500, "Unknown internal error");
             }
         });
 
+        /* =========================
+           RUN SERVER
+        ========================== */
 
-        /* ---------------------------
-           Run Server
-        ---------------------------- */
+        const char* portEnv = std::getenv("PORT");
+        int port = portEnv ? std::stoi(portEnv) : 8080;
 
-        std::cout
-            << "Server running at:\n"
-            << "http://localhost:8080\n"
-            << std::endl;
-
-        // app.port(8080)
-        //    .multithreaded()
-        //    .run();
-
-        // need to manage dynamic port for deployment platforms like Railway, Heroku, etc.
-        const char *portEnv = std::getenv("PORT");
-
-        int port = 8080; // fallback for local
-
-        if (portEnv != nullptr)
-        {
-          port = std::stoi(portEnv);
-        }
-
-        std::cout << "Server starting on port " << port << std::endl;
+        std::cout << "Server running on port " << port << std::endl;
 
         app.port(port)
-            .multithreaded()
-            .run();
-
+           .multithreaded()
+           .run();
 
         curl_global_cleanup();
     }
     catch (std::exception& e)
     {
-        std::cerr
-            << "Startup error: "
-            << e.what()
-            << std::endl;
+        std::cerr << "Startup error: " << e.what() << std::endl;
     }
 
     return 0;
