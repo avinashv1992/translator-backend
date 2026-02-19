@@ -1,5 +1,7 @@
 #include "crow/app.h"
 #include "crow/json.h"
+#include "crow/middlewares/cors.h"
+
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
 
@@ -280,7 +282,17 @@ int main()
         GROQ_API_KEY   = getEnv("GROQ_API_KEY");
         GEMINI_API_KEY = getEnv("GEMINI_API_KEY");
 
-        crow::SimpleApp app;
+        //crow::SimpleApp app;
+        //to handle CORS preflight requests
+        crow::App<crow::CORSHandler> app;
+
+        auto &cors = app.get_middleware<crow::CORSHandler>();
+
+        cors.global()
+            .origin("*")
+            .methods("POST"_method, "GET"_method, "OPTIONS"_method)
+            .headers("Content-Type")
+            .max_age(86400);
 
         /* =========================
            HEALTH
