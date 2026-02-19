@@ -878,6 +878,16 @@ std::unordered_map<std::string, LanguageInfo> SUPPORTED_LANGUAGES = {
     {"Spanish", {"Español"}},
     {"Hindi", {"हिन्दी"}},
     {"Japanese", {"日本語"}},
+    {"Chinese (Simplified)", {"简体中文"}},
+    {"Chinese (Traditional)", {"繁體中文"}},
+    {"Czech", {"Čeština"}},
+    {"Italian", {"Italiano"}},
+    {"Korean", {"한국어"}},
+    {"Polish", {"Polski"}},
+    {"Portuguese (Brazilian)", {"Português (Brasil)"}},
+    {"Russian", {"Русский"}},
+    {"Ukrainian", {"Українська"}},
+    {"Marathi", {"मराठी"}},
     {"Chinese", {"中文"}}
 };
 
