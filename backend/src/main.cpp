@@ -584,6 +584,7 @@ std::unordered_map<std::string, LanguageInfo> SUPPORTED_LANGUAGES = {
     {"German", {"Deutsch"}},
     {"Spanish", {"Español"}},
     {"Hindi", {"हिन्दी"}},
+    {"Marathi", {"मराठी"}},
     {"Japanese", {"日本語"}},
     {"Chinese", {"中文"}}
 };
