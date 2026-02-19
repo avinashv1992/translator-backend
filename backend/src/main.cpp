@@ -1166,17 +1166,17 @@ CROW_ROUTE(app, "/api/translate_to_check")
                 if (!body)
                     return crow::response(400, "Invalid JSON");
 
-                if (!body.has("text") || !body.has("language"))
+                if (!body.has("text") || !body.has("targetLanguage"))
                     return crow::response(400, "Missing required fields");
 
                 if (body["text"].t() != crow::json::type::String ||
-                    body["language"].t() != crow::json::type::String)
+                    body["targetLanguage"].t() != crow::json::type::String)
                 {
                     return crow::response(400, "text and language must be strings");
                 }
 
                 std::string text           = body["text"].s();
-                std::string targetLanguage = body["language"].s();
+                std::string targetLanguage = body["targetLanguage"].s();
 
                 if (text.empty() || targetLanguage.empty())
                     return crow::response(400, "Fields cannot be empty");
