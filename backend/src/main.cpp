@@ -1023,6 +1023,34 @@ std::string callGemini(const std::string& prompt)
 }
 
 /* ============================================================
+   Language Detection with Groq
+============================================================ */
+std::string detectLanguageWithGroq(const std::string& text)
+{
+    std::string supportedList;
+    for (const auto& [lang, _] : SUPPORTED_LANGUAGES)
+    {
+        if (!supportedList.empty()) supportedList += ", ";
+        supportedList += lang;
+    }
+
+    std::string systemPrompt =
+        "You are a professional language detection engine.\n"
+        "Only choose from this list:\n" + supportedList +
+        "\nIf none match confidently return \"Unknown\".\n"
+        "Return ONLY JSON like {\"language\":\"English\"}";
+
+    std::string response = callGroq(systemPrompt, text);
+
+    ordered_json parsed = ordered_json::parse(response);
+
+    if (!parsed.contains("language"))
+        throw std::runtime_error("Invalid detection response");
+
+    return parsed["language"];
+}
+
+/* ============================================================
    Prompt Builders
 ============================================================ */
 
@@ -1074,33 +1102,63 @@ int main()
            DETECT LANGUAGE
         ========================== */
 
+        // CROW_ROUTE(app, "/detect-language")
+        // .methods("POST"_method)
+        // ([](const crow::request& req)
+        // {
+        //     try
+        //     {
+        //         auto body = crow::json::load(req.body);
+        //         if (!body || !body.has("text"))
+        //             return crow::response(400, "Text is required");
+
+        //         std::string text = body["text"].s();
+
+        //         std::string supportedList;
+        //         for (const auto& [lang, _] : SUPPORTED_LANGUAGES)
+        //         {
+        //             if (!supportedList.empty()) supportedList += ", ";
+        //             supportedList += lang;
+        //         }
+
+        //         std::string systemPrompt =
+        //             "Detect language strictly from this list: " + supportedList +
+        //             ". Return JSON {\"language\":\"English\"}";
+
+        //         std::string result = callGroq(systemPrompt, text);
+
+        //         ordered_json parsed = ordered_json::parse(result);
+        //         std::string detected = parsed["language"];
+
+        //         bool supported =
+        //             SUPPORTED_LANGUAGES.find(detected) != SUPPORTED_LANGUAGES.end();
+
+        //         ordered_json resJson;
+        //         resJson["language"] = detected;
+        //         resJson["supported"] = supported;
+        //         resJson["nativeName"] =
+        //             supported ? SUPPORTED_LANGUAGES[detected].nativeName : nullptr;
+
+        //         return crow::response(resJson.dump(4));
+        //     }
+        //     catch (...)
+        //     {
+        //         return crow::response(500, "Language detection failed");
+        //     }
+        // });
+
+        /* DETECT LANGUAGE */
         CROW_ROUTE(app, "/detect-language")
         .methods("POST"_method)
         ([](const crow::request& req)
         {
-            try
-            {
+            try {
                 auto body = crow::json::load(req.body);
                 if (!body || !body.has("text"))
                     return crow::response(400, "Text is required");
 
                 std::string text = body["text"].s();
-
-                std::string supportedList;
-                for (const auto& [lang, _] : SUPPORTED_LANGUAGES)
-                {
-                    if (!supportedList.empty()) supportedList += ", ";
-                    supportedList += lang;
-                }
-
-                std::string systemPrompt =
-                    "Detect language strictly from this list: " + supportedList +
-                    ". Return JSON {\"language\":\"English\"}";
-
-                std::string result = callGroq(systemPrompt, text);
-
-                ordered_json parsed = ordered_json::parse(result);
-                std::string detected = parsed["language"];
+                std::string detected = detectLanguageWithGroq(text);
 
                 bool supported =
                     SUPPORTED_LANGUAGES.find(detected) != SUPPORTED_LANGUAGES.end();
@@ -1113,8 +1171,7 @@ int main()
 
                 return crow::response(resJson.dump(4));
             }
-            catch (...)
-            {
+            catch (...) {
                 return crow::response(500, "Language detection failed");
             }
         });
@@ -1277,29 +1334,7 @@ CROW_ROUTE(app, "/api/translate_to_check")
                 }
 
                 double scoreA = judgeJson["scoreA"].get<double>();
-                double scoreB = judgeJson["scoreB"].get<double>();
-
-                // std::string winner =
-                //     scoreA > scoreB ? "Llama" :
-                //     scoreB > scoreA ? "Gemini" : "Tie";
-
-                /* -------- Final Response -------- */
-
-                // json response = {
-                //     {"forwardTranslations", {
-                //         {"Llama", llamaForward},
-                //         {"Gemini", geminiForward}
-                //     }},
-                //     {"backTranslations", {
-                //         {"Llama", llamaBack},
-                //         {"Gemini", geminiBack}
-                //     }},
-                //     {"scores", {
-                //         {"Llama", scoreA},
-                //         {"Gemini", scoreB}
-                //     }},
-                //     {"winner", winner}
-                // };
+                double scoreB = judgeJson["scoreB"].get<double>();                
 
                 double geminiScoreA = scoreA; // Gemini judge for Llama
                 double geminiScoreB = scoreB; // Gemini judge for Gemini
@@ -1338,7 +1373,7 @@ CROW_ROUTE(app, "/api/translate_to_check")
                 //json response = json::object();
                 ordered_json  response = ordered_json ::object();
 
-                //response["detectedSourceLanguage"] = detectedSourceLanguage;
+                response["detectedSourceLanguage"] = detectLanguageWithGroq(text);
                 response["targetLanguage"] = targetLanguage;
 
                 response["forwardTranslations"] = {
