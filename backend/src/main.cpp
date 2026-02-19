@@ -926,7 +926,7 @@ std::string cleanString(const std::string& s)
 ============================================================ */
 
 std::string callGroq(const std::string& systemPrompt,
-                     const std::string& userPrompt)
+                     const std::string& userPrompt="")
 {
     CURL* curl = curl_easy_init();
     if (!curl)
@@ -1337,7 +1337,7 @@ CROW_ROUTE(app, "/api/translate_to_check")
 
                 try
                 {
-                    llamaBack  = callGrokForbackTranslation("Translate back to English:\n" + llamaForward);
+                    llamaBack  = callGroq("Translate back to English:\n" + llamaForward);
                     geminiBack = callGemini("Translate back to English:\n" + geminiForward);
                 }
                 catch (...)
